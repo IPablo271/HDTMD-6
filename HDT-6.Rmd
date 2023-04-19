@@ -1,0 +1,335 @@
+
+---
+title: "Lab6"
+author: "Javier Mombiela, Jose Hernandez, Pablo Gonzalez"
+date: "2023-03-10"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(cluster) #Para calcular la silueta
+library(e1071)#para cmeans
+library(mclust) #mixtures of gaussians
+library(fpc) #para hacer el plotcluster
+library(NbClust) #Para determinar el número de clusters óptimo
+library(factoextra) #Para hacer gráficos bonitos de clustering
+library(hopkins) #Para revisar si vale la pena hacer agrupamiento
+library(GGally) #Para hacer el conjunto de graficos
+library(FeatureImpCluster) #Para revisar la importancia de las variables en los grupos.
+library(pheatmap) #Para hacer mapa de calor
+library(dplyr)
+library(nortest)
+library(rpart)
+library(caret)
+library(tree)
+library(rpart.plot)
+library(randomForest)
+library(fastDummies)
+library(profvis)
+library(mlr)
+```
+
+## Lab 6 Regresión Logística
+
+```{r}
+datos <-read.csv("train.csv")
+datos_numericos <- datos %>%
+  select_if(is.numeric)
+
+cualitativas <- datos %>%
+  select_if(.predicate = function(x) !is.numeric(x))
+
+datos <- datos %>% mutate_at(colnames(cualitativas), function(x) as.factor(x))
+
+datos_numericos <-datos_numericos[complete.cases(datos_numericos),]
+```
+
+```{r}
+datos_numericos <-scale(na.omit(datos_numericos))
+```
+## Creacion de la variable de clasificacion de precios
+```{r}
+datos_numericos <-data.frame(datos_numericos)
+q1 <- quantile(datos_numericos$SalePrice,0.33)
+q2 <- quantile(datos_numericos$SalePrice,0.5)
+q3 <-quantile(datos_numericos$SalePrice,0.7)
+datos_numericos$clasificacion <- sapply(datos_numericos$SalePrice, function(x) ifelse(x <= q1, "Economicas", ifelse(x >= q2 && x <= q3, "Intermedias", "Caras")))
+datos_numericos$clasificacion <-factor(datos_numericos$clasificacion)
+```
+
+
+## 1.1 Crear variables dicotomicas
+```{r}
+datos_con_dummy <- dummy_cols(datos_numericos, select_columns = c("clasificacion"))
+datos_con_dummy <- select(datos_con_dummy, -clasificacion, -clasificacion_Economicas, -clasificacion_Intermedias) 
+datos_con_dummy$clasificacion_Caras <- datos_con_dummy$clasificacion_Caras
+datos_con_dummy<-datos_con_dummy %>% mutate_at(c("clasificacion_Caras"),as.factor)
+```
+## 1.2 Datos de test y datos de entrenamiento
+```{r}
+porcentaje <- 0.7
+set.seed(123)
+datos_con_dummy <-select(datos_con_dummy, -Id)
+corte <- sample(nrow(datos_con_dummy), nrow(datos_con_dummy) * porcentaje)
+train <- datos_con_dummy[corte, ]
+test <- datos_con_dummy[-corte, ]
+```
+
+## 1.3 Modelo con todas las variables numericas
+```{r}
+modelo_logistico<-glm(clasificacion_Caras~., data = train,family = binomial(), maxit=100)
+```
+## 1.4 Summary del modelo
+```{r}
+summary(modelo_logistico)
+```
+Como se puede visualizar en el summary existen variables que tienen un coeficiente significativo estas son:
+-SalePrice
+-GarageArea
+-FullBath
+-BedroomAbvGr
+-BsmtHalfBath
+-OverallCond
+
+## 1.5 correlacion de datos
+```{r}
+set.seed(123)
+datos_numericos <-select(datos_numericos, -clasificacion)
+correlac <- cor(datos_numericos)
+correlac <- cor(datos_numericos)
+
+indices <- which(correlac > 0.6 & upper.tri(correlac), arr.ind = TRUE)
+
+nombres <- colnames(correlac)
+
+for (i in 1:nrow(indices)) {
+  fila <- indices[i, 1]
+  col <- indices[i, 2]
+  cat(nombres[fila], "y", nombres[col], "tienen una correlación de", correlac[fila, col], "\n")
+}
+```
+
+## 1.6 Prediccion con el modelo
+```{r}
+pred<-predict(modelo_logistico,newdata = test, type = "response")
+prediccion<-ifelse(pred>=0.5,1,0)
+confusionMatrix(as.factor(test$clasificacion_Caras),as.factor(prediccion))
+```
+Como se puede visualizar con las variables numericas se cuenta con un buen modelo esto debido a que se tiene un modelo con 0.76 de accuracy lo cual es muy bueno, este tambien cuenta con una sensibilidad de 0.76 y una specifity de 0.77.
+
+## 1.7 curva de aprendizage
+
+```{r curva_de_aprendizaje}
+
+datos.task = makeClassifTask(data = train, target = "clasificacion_Caras")
+rin2 = makeResampleDesc(method = "CV", iters = 10, predict = "both")
+lrn = makeLearner("classif.multinom", predict.type = "prob", trace = FALSE)
+lc2 = generateLearningCurveData(learners = lrn, task = datos.task,
+                                percs = seq(0.1, 1, by = 0.1),
+                                measures = list(ber, setAggregation(ber, train.mean)), resampling = rin2,
+                                show.info = FALSE)
+plotLearningCurve(lc2, facet = "learner")
+```
+Al momento de observar las cuarvas de aprendizage de nuestro modelo se puede conlcluir que el modelo no cuenta con Overfitting esto debido a que las dos curvas corvengen a un mismo punto lo cual nos da un indicador de que noe xiste overfitting de nuestro modelo.
+
+
+## Seleccion del segundo modelo 
+Para el segundo modelo se usaran las variables que tengan una relacion entre 0.6 y 0.70 respectivamente
+YearBuilt
+YearRemodAdd 
+OverallQual
+GrLivArea 
+X2ndFlrSF
+BsmtFinSF1
+BsmtFullBath 
+FullBath
+HalfBath 
+X2ndFlrSF
+TotRmsAbvGrd 
+BedroomAbvGr 
+GarageYrBlt 
+GarageCars 
+TotalBsmtSF  
+SalePrice  
+X1stFlrSF
+SalePrice 
+GarageArea
+
+## 1.8 Datos de test2 y datos de entrenamiento2
+```{r}
+porcentaje <- 0.7
+set.seed(123)
+# Seleccionar las columnas deseadas
+datos_seleccionados <- datos_con_dummy[, c("YearBuilt", "YearRemodAdd", "OverallQual", "GrLivArea", "X2ndFlrSF", "BsmtFinSF1", "BsmtFullBath", "FullBath", "HalfBath", "X2ndFlrSF", "TotRmsAbvGrd", "BedroomAbvGr", "GarageYrBlt", "GarageCars", "TotalBsmtSF", "SalePrice", "X1stFlrSF", "SalePrice", "GarageArea","clasificacion_Caras")]
+
+corte <- sample(nrow(datos_seleccionados), nrow(datos_seleccionados) * porcentaje)
+train <- datos_seleccionados[corte, ]
+test <- datos_seleccionados[-corte, ]
+```
+## 1.9 Modelo con todas las variables numericas
+```{r}
+modelo_logistico2<-glm(clasificacion_Caras~., data = train,family = binomial(), maxit=100)
+```
+## 1.10 Summary del modelo
+```{r}
+summary(modelo_logistico2)
+```
+Como se puede visualizar en el summary existen variables que tienen un coeficiente significativo estas son:
+-SalePrice
+-GarageArea
+-FullBath
+-BedroomAbvGr
+-BsmtFinSF1
+
+
+## 1.11 Prediccion con el modelo
+```{r}
+pred<-predict(modelo_logistico2,newdata = test, type = "response")
+prediccion<-ifelse(pred>=0.5,1,0)
+confusionMatrix(as.factor(test$clasificacion_Caras),as.factor(prediccion))
+```
+Se puede mencionar que este modelo obtuvo una accuracy de 0.7626 por lo que es unn poco menos peor que el anterior ya antes planteado con las otras variables se puede mencionar que este tambien cuenta con un specifity de 0.7660.
+
+
+```{r curva_de_aprendizaje2}
+
+datos.task = makeClassifTask(data = train, target = "clasificacion_Caras")
+rin2 = makeResampleDesc(method = "CV", iters = 10, predict = "both")
+lrn = makeLearner("classif.multinom", predict.type = "prob", trace = FALSE)
+lc2 = generateLearningCurveData(learners = lrn, task = datos.task,
+                                percs = seq(0.1, 1, by = 0.1),
+                                measures = list(ber, setAggregation(ber, train.mean)), resampling = rin2,
+                                show.info = FALSE)
+plotLearningCurve(lc2, facet = "learner")
+```
+
+Al momento de observar las cuarvas de aprendizage de nuestro modelo se puede conlcluir que el modelo no cuenta con Overfitting esto debido a que las dos curvas corvengen a un mismo punto lo cual nos da un indicador de que noe xiste overfitting de nuestro modelo.
+
+## Seleccion del tercer modelo 
+Para el segundo modelo se usaran las variables que tengan una relacion mayor a 0.70 respectivamente
+
+
+## 1.12 Datos de test3 y datos de entrenamiento3
+
+TotalBsmtSF
+X1stFlrSF  
+GrLivArea
+TotRmsAbvGrd
+YearBuilt
+GarageYrBlt 
+GarageCars
+GarageArea 
+SalePrice 
+```{r}
+porcentaje <- 0.7
+set.seed(123)
+# Seleccionar las columnas deseadas
+datos_seleccionados <- datos_con_dummy[,c("TotalBsmtSF", "X1stFlrSF", "GrLivArea", "TotRmsAbvGrd", "YearBuilt", "GarageYrBlt", "GarageCars", "GarageArea", "SalePrice","clasificacion_Caras")]
+
+corte <- sample(nrow(datos_seleccionados), nrow(datos_seleccionados) * porcentaje)
+train <- datos_seleccionados[corte, ]
+test <- datos_seleccionados[-corte, ]
+
+```
+## 1.13 Modelo con todas las variables numericas
+```{r}
+modelo_logistico3<-glm(clasificacion_Caras~., data = train,family = binomial(), maxit=100)
+```
+## 1.14 Summary del modelo
+```{r}
+summary(modelo_logistico3)
+```
+Como se puede visualizar en el summary existen variables que tienen un coeficiente significativo estas son:
+-SalePrice
+-GarageArea
+-GarageYrBlt
+
+## 1.15 Prediccion con el modelo
+```{r}
+pred<-predict(modelo_logistico3,newdata = test, type = "response")
+prediccion<-ifelse(pred>=0.5,1,0)
+confusionMatrix(as.factor(test$clasificacion_Caras),as.factor(prediccion))
+```
+Como se puede visaulzizar el modelo obtuvo un accuracy de 0.75 lo cual no es mayor al primer modelo por lo que el primer modelo es el mehor se puede mencionar que este obtuvo un specifity de 0.75.
+```{r curva_de_aprendizaje3}
+
+datos.task = makeClassifTask(data = train, target = "clasificacion_Caras")
+rin2 = makeResampleDesc(method = "CV", iters = 10, predict = "both")
+lrn = makeLearner("classif.multinom", predict.type = "prob", trace = FALSE)
+lc2 = generateLearningCurveData(learners = lrn, task = datos.task,
+                                percs = seq(0.1, 1, by = 0.1),
+                                measures = list(ber, setAggregation(ber, train.mean)), resampling = rin2,
+                                show.info = FALSE)
+plotLearningCurve(lc2, facet = "learner")
+```
+Al momento de observar las cuarvas de aprendizage de nuestro modelo se puede conlcluir que el modelo no cuenta con Overfitting esto debido a que las dos curvas corvengen a un mismo punto lo cual nos da un indicador de que noe xiste overfitting de nuestro modelo.
+
+## Determinar cual es el mejor modelo
+Se pudo determinar que el mejor modelo fu el primer modelo esto debido a que cuenta con una cantidad mayor de accuracy lo cual nos dice que este es un mejor modelo el modelo obtuvo un accuracy de 0.77 mientras que los otros dos modelos de 0.76 y 0.75 lo cual no es una gran diferencia pero ya es un poco mejor que los otros.
+
+
+## Metodo arboles de decision
+```{r}
+porcentaje <- 0.7
+set.seed(123)
+corte <- sample(nrow(datos_con_dummy), nrow(datos_con_dummy) * porcentaje)
+train <- datos_con_dummy[corte, ]
+test <- datos_con_dummy[-corte, ]
+```
+## 1.16 arboles de decision
+```{r}
+regression_tree <-rpart(formula = clasificacion_Caras ~.,data = train)
+```
+## 1.17 Summary arboles de decision
+```{r}
+summary(regression_tree)
+```
+## 1.18 Prediccion regresion tree
+```{r}
+prediccionrandom <- predict(regression_tree,newdata = test)
+```
+
+## 1. 19 Metricas de evaluacion
+```{r}
+precision <- sum(prediccionrandom == test$clasificacion_Caras) / nrow(test)
+precision
+```
+## Modelo random forest
+## 1.20 Random forest
+```{r}
+rf_model <- randomForest(clasificacion_Caras ~.,data = train)
+```
+## 1.21 Metricas Random Forest
+```{r}
+predictions <- predict(rf_model, newdata = test)
+accuracy <- mean(predictions == test$clasificacion_Caras)
+accuracy
+```
+## Modelo naibe bayes
+## 1.21 Naibe bayes
+```{r}
+modelobayes <- naiveBayes(clasificacion_Caras ~ ., data = train)
+```
+## 1.22 Prediccion Naive bayes
+```{r}
+prediccionBayes <- predict(modelobayes, newdata = test)
+```
+## 1.23 Metricas de Naive Bayes
+```{r}
+confusionMatrix(prediccionBayes, test$clasificacion_Caras)
+```
+Se puede mencionar que el accuracy del metodo de naibe bayes es de 0.76 aproximadamente muy similar al dato obtenido con la regresion logistica.
+
+# Comparación de los algoritmos
+Comos se puede visualizar se realizaron 4 diferentes algoritmos, regresión logística, naive bayes, Random forest y árboles de decisión, como comparación se puede mencionar que los 4 algoritmos tomaron relativamente el mismo tiempo en ser procesados ninguno se sacó diferencia con el otro mientras que respecto con el tema de accuracy el que mejor lo hizo fue el modelo de árboles de decisión ya que este obtuvo una precisión perfecta de 1 mientras que el que peor lo hizo fue el modelo de naive bayes teniendo un accuracy de 0.7596 pero cabe la pena mencionar que este es muy similar al modelo de regresión logística ya que este obtuvo un accuracy de 0.7656 por lo que los do lo hicieron similarmente, se puede concluir que el mejor modelo es el modelo de árboles de decisión para este set de datos.
+
+
+
+
+
+
